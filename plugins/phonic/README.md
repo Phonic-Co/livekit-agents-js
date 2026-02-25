@@ -18,7 +18,7 @@ export default defineAgent({
     const session = new voice.AgentSession({
       // Uses PHONIC_API_KEY environment variable when apiKey is not provided
       llm: new phonic.realtime.RealtimeModel({
-        voice: 'virginia',
+        voice: 'sabrina',
         welcomeMessage: 'Hey there, how can I help you today?',
         audioSpeed: 1.2,
       }),

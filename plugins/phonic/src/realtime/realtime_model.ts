@@ -21,6 +21,7 @@ const PHONIC_NUM_CHANNELS = 1;
 const PHONIC_INPUT_FRAME_MS = 20;
 const DEFAULT_MODEL = 'merritt';
 const WS_CLOSE_NORMAL = 1000;
+const TOOL_CALL_OUTPUT_TIMEOUT_MS = 60_000;
 
 export interface RealtimeModelOptions {
   apiKey: string;
@@ -125,8 +126,6 @@ export class RealtimeModel extends llm.RealtimeModel {
       messageTruncation: false,
       turnDetection: true,
       userTranscription: true,
-      // TODO @Phonic-Co: Implement tool support
-      // Phonic has automatic tool reply generation, but tools are not supported with LiveKit Agents yet.
       autoToolReplyGeneration: true,
       audioOutput: true,
     });
@@ -198,7 +197,12 @@ export class RealtimeSession extends llm.RealtimeSession {
   private configSent = false;
   private instructionsReady: Promise<void>;
   private resolveInstructionsReady: () => void;
+  private toolsReady: Promise<void>;
+  private resolveToolsReady: () => void;
   private connectTask: Promise<void>;
+  private phonicToolDefinitions: Record<string, unknown>[] = [];
+  private pendingToolCallIds = new Set<string>();
+  private readyToStart = false;
 
   constructor(realtimeModel: RealtimeModel) {
     super(realtimeModel);
@@ -207,6 +211,10 @@ export class RealtimeSession extends llm.RealtimeSession {
     this.resolveInstructionsReady = () => {};
     this.instructionsReady = new Promise<void>((resolve) => {
       this.resolveInstructionsReady = resolve;
+    });
+    this.resolveToolsReady = () => {};
+    this.toolsReady = new Promise<void>((resolve) => {
+      this.resolveToolsReady = resolve;
     });
 
     this.client = new PhonicClient({
@@ -243,14 +251,62 @@ export class RealtimeSession extends llm.RealtimeSession {
     this.resolveInstructionsReady();
   }
 
-  async updateChatCtx(_chatCtx: llm.ChatContext): Promise<void> {
-    this.logger.warn('updateChatCtx is not supported by the Phonic realtime model.');
+  async updateChatCtx(chatCtx: llm.ChatContext): Promise<void> {
+    let sent = false;
+    for (const item of chatCtx.items) {
+      if (item.type === 'function_call_output' && this.pendingToolCallIds.has(item.callId)) {
+        this.pendingToolCallIds.delete(item.callId);
+        this.logger.info(`Sending tool call output for ${item.name} (call_id: ${item.callId})`);
+        this.socket?.sendToolCallOutput({
+          type: 'tool_call_output',
+          tool_call_id: item.callId,
+          output: item.output,
+        });
+        sent = true;
+      }
+    }
+    if (!sent) {
+      this.logger.warn(
+        'updateChatCtx called but no new tool call outputs to send. Phonic does not support general chat context updates.',
+      );
+    } else {
+      this.startNewAssistantTurn();
+    }
   }
 
   async updateTools(tools: llm.ToolContext): Promise<void> {
-    if (Object.keys(tools).length > 0) {
-      this.logger.warn('Tool use is not supported by the Phonic realtime model.');
+    if (this.configSent) {
+      this.logger.warn(
+        'updateTools called after config was already sent. Phonic does not support updating tools mid-session.',
+      );
+      return;
     }
+
+    this._tools = { ...tools };
+    this.phonicToolDefinitions = [];
+
+    for (const [name, tool] of Object.entries(tools)) {
+      if (!llm.isFunctionTool(tool)) continue;
+
+      const parameters = llm.toJsonSchema(tool.parameters);
+      this.phonicToolDefinitions.push({
+        type: 'custom_websocket',
+        tool_schema: {
+          type: 'function',
+          function: {
+            name,
+            description: tool.description,
+            parameters,
+            strict: true,
+          },
+        },
+        tool_call_output_timeout_ms: TOOL_CALL_OUTPUT_TIMEOUT_MS,
+        wait_for_speech_before_tool_call: true,
+        allow_tool_chaining: false,
+      });
+    }
+
+    this.resolveToolsReady();
   }
 
   updateOptions(_options: { toolChoice?: llm.ToolChoice | null }): void {
@@ -258,7 +314,7 @@ export class RealtimeSession extends llm.RealtimeSession {
   }
 
   pushAudio(frame: AudioFrame): void {
-    if (this.closed) {
+    if (this.closed || !this.readyToStart) {
       return;
     }
 
@@ -293,7 +349,9 @@ export class RealtimeSession extends llm.RealtimeSession {
   }
 
   async interrupt(): Promise<void> {
-    this.logger.warn('interrupt is not supported by the Phonic realtime model.');
+    this.logger.warn(
+      'interrupt() is not supported by Phonic realtime model. User interruptions are automatically handled by Phonic.',
+    );
   }
 
   async truncate(_options: { messageId: string; audioEndMs: number; audioTranscript?: string }) {
@@ -303,6 +361,7 @@ export class RealtimeSession extends llm.RealtimeSession {
   async close(): Promise<void> {
     this.closed = true;
     this.resolveInstructionsReady();
+    this.resolveToolsReady();
     this.closeCurrentGeneration({ interrupted: false });
     this.socket?.close();
     await this.connectTask;
@@ -332,7 +391,12 @@ export class RealtimeSession extends llm.RealtimeSession {
 
     await this.socket.waitForOpen();
     await this.instructionsReady;
+    await this.toolsReady;
     if (this.closed) return;
+
+    // TODO: @qiong fix types when SDK updates
+    const tools: unknown[] = [...(this.options.phonicTools ?? []), ...this.phonicToolDefinitions];
+
     this.configSent = true;
     this.socket.sendConfig({
       type: 'config',
@@ -347,7 +411,8 @@ export class RealtimeSession extends llm.RealtimeSession {
       output_format: 'pcm_44100',
       recognized_languages: this.options.languages,
       audio_speed: this.options.audioSpeed,
-      tools: this.options.phonicTools,
+      // @ts-ignore - @qiong fix
+      tools,
       boosted_keywords: this.options.boostedKeywords,
       generate_no_input_poke_text: this.options.generateNoInputPokeText,
       no_input_poke_sec: this.options.noInputPokeSec,
@@ -380,16 +445,11 @@ export class RealtimeSession extends llm.RealtimeSession {
       case 'user_finished_speaking':
         this.handleInputSpeechStopped();
         break;
+      case 'tool_call':
+        this.handleToolCall(message);
+        break;
       case 'error':
         this.emitError(new Error(message.error.message), false);
-        break;
-      case 'tool_call':
-        this.emitError(
-          new Error(
-            `WebSocket tool calls are not yet supported by the Phonic realtime model with LiveKit Agents.`,
-          ),
-          false,
-        );
         break;
       case 'assistant_ended_conversation':
         this.emitError(
@@ -403,11 +463,15 @@ export class RealtimeSession extends llm.RealtimeSession {
         this.conversationId = message.conversation_id;
         this.logger.info(`Phonic Conversation began with ID: ${this.conversationId}`);
         break;
-      case 'assistant_chose_not_to_respond':
+      case 'tool_call_interrupted':
+        this.handleToolCallInterrupted(message);
+        break;
       case 'ready_to_start_conversation':
+        this.readyToStart = true;
+        break;
+      case 'assistant_chose_not_to_respond':
       case 'input_cancelled':
       case 'tool_call_output_processed':
-      case 'tool_call_interrupted':
       case 'dtmf':
       default:
         break;
@@ -419,8 +483,13 @@ export class RealtimeSession extends llm.RealtimeSession {
      * Although Phonic sends audio chunks when the assistant is not speaking (i.e. containing silence or background noise),
      * we only process the chunks when the assistant is speaking to align with the generations model, whereby new streams are created for each turn.
      */
+    if (this.currentGeneration === undefined && message.text) {
+      this.logger.debug('Starting new generation due to text in audio chunk');
+      this.startNewAssistantTurn();
+    }
+
     const gen = this.currentGeneration;
-    if (!gen) return;
+    if (gen === undefined) return;
 
     if (message.text) {
       gen.outputText += message.text;
@@ -461,6 +530,27 @@ export class RealtimeSession extends llm.RealtimeSession {
       content: message.text,
       id: itemId,
     });
+  }
+
+  private handleToolCall(message: Phonic.ToolCallPayload): void {
+    this.pendingToolCallIds.add(message.tool_call_id);
+
+    this.currentGeneration!.functionChannel.write(
+      llm.FunctionCall.create({
+        callId: message.tool_call_id,
+        name: message.tool_name,
+        args: JSON.stringify(message.parameters),
+      }),
+    );
+    this.closeCurrentGeneration({ interrupted: false });
+  }
+
+  private handleToolCallInterrupted(message: Phonic.ToolCallInterruptedPayload): void {
+    this.pendingToolCallIds.delete(message.tool_call_id);
+    this.logger.warn(
+      `Tool call for ${message.tool_name} (call_id: ${message.tool_call_id}) was cancelled due to user interruption.`,
+    );
+    this.startNewAssistantTurn();
   }
 
   private handleInputSpeechStarted(): void {
