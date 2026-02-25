@@ -201,7 +201,7 @@ export class RealtimeSession extends llm.RealtimeSession {
   private toolsReady: Promise<void>;
   private resolveToolsReady: () => void;
   private connectTask: Promise<void>;
-  private phonicToolDefinitions: Record<string, unknown>[] = [];
+  private toolDefinitions: Record<string, unknown>[] = [];
   private pendingToolCallIds = new Set<string>();
   private readyToStart = false;
 
@@ -284,28 +284,23 @@ export class RealtimeSession extends llm.RealtimeSession {
     }
 
     this._tools = { ...tools };
-    this.phonicToolDefinitions = [];
-
-    for (const [name, tool] of Object.entries(tools)) {
-      if (!llm.isFunctionTool(tool)) continue;
-
-      const parameters = llm.toJsonSchema(tool.parameters);
-      this.phonicToolDefinitions.push({
+    this.toolDefinitions = Object.entries(tools)
+      .filter(([_, tool]) => llm.isFunctionTool(tool))
+      .map(([name, tool]) => ({
         type: 'custom_websocket',
         tool_schema: {
           type: 'function',
           function: {
             name,
             description: tool.description,
-            parameters,
+            parameters: llm.toJsonSchema(tool.parameters),
             strict: true,
           },
         },
         tool_call_output_timeout_ms: TOOL_CALL_OUTPUT_TIMEOUT_MS,
         wait_for_speech_before_tool_call: true,
         allow_tool_chaining: false,
-      });
-    }
+      }));
 
     this.resolveToolsReady();
   }
@@ -395,9 +390,6 @@ export class RealtimeSession extends llm.RealtimeSession {
     await this.toolsReady;
     if (this.closed) return;
 
-    // TODO: @qiong fix types when SDK updates
-    const tools: unknown[] = [...(this.options.phonicTools ?? []), ...this.phonicToolDefinitions];
-
     this.configSent = true;
     this.socket.sendConfig({
       type: 'config',
@@ -412,8 +404,7 @@ export class RealtimeSession extends llm.RealtimeSession {
       output_format: 'pcm_44100',
       recognized_languages: this.options.languages,
       audio_speed: this.options.audioSpeed,
-      // @ts-ignore - @qiong fix
-      tools,
+      tools: [...(this.options.phonicTools ?? []), ...this.toolDefinitions],
       boosted_keywords: this.options.boostedKeywords,
       generate_no_input_poke_text: this.options.generateNoInputPokeText,
       no_input_poke_sec: this.options.noInputPokeSec,
