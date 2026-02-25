@@ -14,7 +14,7 @@ const toggleLight = llm.tool({
   }),
   execute: async ({ light_id, state }) => {
     console.log(`Turning ${state} light ${light_id}`);
-    await new Promise((resolve) => setTimeout(resolve, 5_000));
+    await new Promise((resolve) => setTimeout(resolve, 1_000));
     return `Light ${light_id} turned ${state}`;
   },
 });
