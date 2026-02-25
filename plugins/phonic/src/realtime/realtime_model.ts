@@ -127,6 +127,7 @@ export class RealtimeModel extends llm.RealtimeModel {
       turnDetection: true,
       userTranscription: true,
       autoToolReplyGeneration: true,
+      manualFunctionCalls: false,
       audioOutput: true,
     });
 

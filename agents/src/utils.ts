@@ -9,6 +9,7 @@ import type {
   TrackKind,
 } from '@livekit/rtc-node';
 import { AudioFrame, AudioResampler, RoomEvent } from '@livekit/rtc-node';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { EventEmitter, once } from 'node:events';
 import type { ReadableStream } from 'node:stream/web';
 import { TransformStream, type TransformStreamDefaultController } from 'node:stream/web';
@@ -172,6 +173,11 @@ export class Future<T = void> {
     this.#rejected = true;
     this.#error = error;
     this.#rejectPromise(error);
+    // Python calls Future.exception() right after set_exception() to silence
+    // "exception was never retrieved" warnings. In JS, consume the rejection
+    // immediately so Node does not emit unhandled-rejection noise before a
+    // later await/catch observes it.
+    void this.#await.catch(() => undefined);
   }
 }
 
@@ -434,7 +440,9 @@ export enum TaskResult {
  * @param T - The type of the task result
  */
 export class Task<T> {
+  private static readonly currentTaskStorage = new AsyncLocalStorage<Task<unknown>>();
   private resultFuture: Future<T>;
+  private doneCallbacks: Set<() => void> = new Set();
 
   #logger = log();
 
@@ -444,6 +452,21 @@ export class Task<T> {
     readonly name?: string,
   ) {
     this.resultFuture = new Future();
+    void this.resultFuture.await
+      .then(
+        () => undefined,
+        () => undefined,
+      )
+      .finally(() => {
+        for (const callback of this.doneCallbacks) {
+          try {
+            callback();
+          } catch (error) {
+            this.#logger.error({ error }, 'Task done callback failed');
+          }
+        }
+        this.doneCallbacks.clear();
+      });
     this.runTask();
   }
 
@@ -463,6 +486,13 @@ export class Task<T> {
     return new Task(fn, abortController, name);
   }
 
+  /**
+   * Returns the currently running task in this async context, if available.
+   */
+  static current(): Task<unknown> | undefined {
+    return Task.currentTaskStorage.getStore();
+  }
+
   private async runTask() {
     const run = async () => {
       if (this.name) {
@@ -471,7 +501,8 @@ export class Task<T> {
       return await this.fn(this.controller);
     };
 
-    return run()
+    return Task.currentTaskStorage
+      .run(this as Task<unknown>, run)
       .then((value) => {
         this.resultFuture.resolve(value);
         return value;
@@ -543,7 +574,15 @@ export class Task<T> {
   }
 
   addDoneCallback(callback: () => void) {
-    this.resultFuture.await.finally(callback);
+    if (this.done) {
+      queueMicrotask(callback);
+      return;
+    }
+    this.doneCallbacks.add(callback);
+  }
+
+  removeDoneCallback(callback: () => void) {
+    this.doneCallbacks.delete(callback);
   }
 }
 
