@@ -298,6 +298,8 @@ export class RealtimeSession extends llm.RealtimeSession {
           },
         },
         tool_call_output_timeout_ms: TOOL_CALL_OUTPUT_TIMEOUT_MS,
+        // Tool chaining and tool calls during speech are not supported at this time
+        // for ease of implementation within the RealtimeSession generations framework
         wait_for_speech_before_tool_call: true,
         allow_tool_chaining: false,
       }));
@@ -534,6 +536,7 @@ export class RealtimeSession extends llm.RealtimeSession {
         args: JSON.stringify(message.parameters),
       }),
     );
+    // At most 1 tool call is supported per turn due to `toolChaining: false`, allowing us to close the generation
     this.closeCurrentGeneration({ interrupted: false });
   }
 
@@ -542,7 +545,6 @@ export class RealtimeSession extends llm.RealtimeSession {
     this.logger.warn(
       `Tool call for ${message.tool_name} (call_id: ${message.tool_call_id}) was cancelled due to user interruption.`,
     );
-    this.startNewAssistantTurn();
   }
 
   private handleInputSpeechStarted(): void {

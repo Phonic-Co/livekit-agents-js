@@ -6,15 +6,16 @@ import * as phonic from '@livekit/agents-plugin-phonic';
 import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
 
-const turnOnLights = llm.tool({
-  description: 'Turn on the lights. The ones you can turn on are A05, A06, A07, and A08.',
+const toggleLight = llm.tool({
+  description: 'Toggle a light on or off. Available lights are A05, A06, A07, and A08.',
   parameters: z.object({
-    light_id: z.string().describe('The ID of the light to turn on'),
+    light_id: z.string().describe('The ID of the light to toggle'),
+    state: z.enum(['on', 'off']).describe('Whether to turn the light on or off'),
   }),
-  execute: async ({ light_id }) => {
-    console.log(`Turning on light ${light_id}`);
-    await new Promise((resolve) => setTimeout(resolve, 2_000));
-    return `Light ${light_id} turned on`;
+  execute: async ({ light_id, state }) => {
+    console.log(`Turning ${state} light ${light_id}`);
+    await new Promise((resolve) => setTimeout(resolve, 5_000));
+    return `Light ${light_id} turned ${state}`;
   },
 });
 
@@ -23,7 +24,7 @@ export default defineAgent({
     const agent = new voice.Agent({
       instructions: 'You are a helpful voice AI assistant named Alex.',
       tools: {
-        turn_on_lights: turnOnLights,
+        toggle_light: toggleLight,
       },
     });
 
