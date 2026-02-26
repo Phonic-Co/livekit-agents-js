@@ -5,6 +5,7 @@ import type { APIConnectOptions } from '@livekit/agents';
 import {
   AudioByteStream,
   DEFAULT_API_CONNECT_OPTIONS,
+  Future,
   llm,
   log,
   shortuuid,
@@ -196,10 +197,8 @@ export class RealtimeSession extends llm.RealtimeSession {
   private logger = log();
   private closed = false;
   private configSent = false;
-  private instructionsReady: Promise<void>;
-  private resolveInstructionsReady: () => void;
-  private toolsReady: Promise<void>;
-  private resolveToolsReady: () => void;
+  private instructionsReady = new Future<void>();
+  private toolsReady = new Future<void>();
   private connectTask: Promise<void>;
   private toolDefinitions: Record<string, unknown>[] = [];
   private pendingToolCallIds = new Set<string>();
@@ -208,15 +207,6 @@ export class RealtimeSession extends llm.RealtimeSession {
   constructor(realtimeModel: RealtimeModel) {
     super(realtimeModel);
     this.options = realtimeModel._options;
-
-    this.resolveInstructionsReady = () => {};
-    this.instructionsReady = new Promise<void>((resolve) => {
-      this.resolveInstructionsReady = resolve;
-    });
-    this.resolveToolsReady = () => {};
-    this.toolsReady = new Promise<void>((resolve) => {
-      this.resolveToolsReady = resolve;
-    });
 
     this.client = new PhonicClient({
       apiKey: this.options.apiKey,
@@ -249,7 +239,7 @@ export class RealtimeSession extends llm.RealtimeSession {
       return;
     }
     this.options.instructions = instructions;
-    this.resolveInstructionsReady();
+    this.instructionsReady.resolve();
   }
 
   async updateChatCtx(chatCtx: llm.ChatContext): Promise<void> {
@@ -304,7 +294,7 @@ export class RealtimeSession extends llm.RealtimeSession {
         allow_tool_chaining: false,
       }));
 
-    this.resolveToolsReady();
+    this.toolsReady.resolve();
   }
 
   updateOptions(_options: { toolChoice?: llm.ToolChoice | null }): void {
@@ -358,8 +348,8 @@ export class RealtimeSession extends llm.RealtimeSession {
 
   async close(): Promise<void> {
     this.closed = true;
-    this.resolveInstructionsReady();
-    this.resolveToolsReady();
+    this.instructionsReady.resolve();
+    this.toolsReady.resolve();
     this.closeCurrentGeneration({ interrupted: false });
     this.socket?.close();
     await this.connectTask;
@@ -388,8 +378,8 @@ export class RealtimeSession extends llm.RealtimeSession {
     });
 
     await this.socket.waitForOpen();
-    await this.instructionsReady;
-    await this.toolsReady;
+    await this.instructionsReady.await;
+    await this.toolsReady.await;
     if (this.closed) return;
 
     this.configSent = true;
@@ -528,6 +518,11 @@ export class RealtimeSession extends llm.RealtimeSession {
 
   private handleToolCall(message: Phonic.ToolCallPayload): void {
     this.pendingToolCallIds.add(message.tool_call_id);
+
+    if (this.currentGeneration === undefined) {
+      this.logger.warn('Encountered tool call but no active generation. Starting new turn.');
+      this.startNewAssistantTurn();
+    }
 
     this.currentGeneration!.functionChannel.write(
       llm.FunctionCall.create({
