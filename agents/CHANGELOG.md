@@ -1,5 +1,11 @@
 # @livekit/agents
 
+## 1.3.0
+
+### Minor Changes
+
+- feat(stt): add FallbackAdapter for automatic STT provider failover - [#1278](https://github.com/livekit/agents-js/pull/1278) ([@drain-zine](https://github.com/drain-zine))
+
 ## 1.2.8
 
 ### Patch Changes
