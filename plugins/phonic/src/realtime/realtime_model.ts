@@ -15,7 +15,7 @@ import {
 import { AudioFrame, AudioResampler } from '@livekit/rtc-node';
 import type { Phonic } from 'phonic';
 import { PhonicClient } from 'phonic';
-import type { ServerEvent, Voice } from './api_proto.js';
+import type { InterruptedResponsePayload, ServerEvent, Voice } from './api_proto.js';
 
 const PHONIC_INPUT_SAMPLE_RATE = 44100;
 const PHONIC_OUTPUT_SAMPLE_RATE = 44100;
@@ -52,6 +52,7 @@ export interface RealtimeModelOptions {
   noInputPokeText?: string;
   noInputEndConversationSec?: number;
   forbidSpeechAfterToolCall?: string[];
+  streamAheadOfRealTime?: boolean;
   /** Set by `updateInstructions` via `voice.Agent` rather than the RealtimeModel constructor */
   instructions?: string;
 }
@@ -166,6 +167,20 @@ export class RealtimeModel extends llm.RealtimeModel {
        */
       forbidSpeechAfterToolCall?: string[];
       /**
+       * Forward assistant audio ahead of real time instead of pacing it at the playout
+       * clock, eliminating the occasional stutter that real-time pacing can introduce.
+       *
+       * When enabled, Phonic sends each audio chunk as soon as it is generated (the model
+       * generates faster than real time) and the LiveKit framework buffers and plays it
+       * out, while Phonic emits `interrupted_response` on barge-in so the buffered audio is
+       * flushed immediately.
+       *
+       * Incompatible with agents that have background noise enabled — Phonic rejects such a
+       * connection (close code 4101), which surfaces here as a connection error. Defaults to
+       * false.
+       */
+      streamAheadOfRealTime?: boolean;
+      /**
        * Connection options for the API connection
        */
       connOptions?: APIConnectOptions;
@@ -225,6 +240,7 @@ export class RealtimeModel extends llm.RealtimeModel {
       noInputPokeText: options.noInputPokeText,
       noInputEndConversationSec: options.noInputEndConversationSec,
       forbidSpeechAfterToolCall: options.forbidSpeechAfterToolCall,
+      streamAheadOfRealTime: options.streamAheadOfRealTime,
       connOptions: options.connOptions ?? DEFAULT_API_CONNECT_OPTIONS,
       model: options.model ?? DEFAULT_MODEL,
       baseUrl: options.baseUrl,
@@ -598,6 +614,9 @@ export class RealtimeSession extends llm.RealtimeSession {
   private async connect(): Promise<void> {
     this.socket = await this.client.conversations.connect({
       reconnectAttempts: this.options.connOptions.maxRetry,
+      ...(this.options.streamAheadOfRealTime && {
+        queryParams: { stream_ahead_of_real_time: true },
+      }),
     });
 
     if (this.closed) {
@@ -687,6 +706,9 @@ export class RealtimeSession extends llm.RealtimeSession {
         break;
       case 'user_finished_speaking':
         this.handleInputSpeechStopped();
+        break;
+      case 'interrupted_response':
+        this.handleInterruptedResponse(message);
         break;
       case 'tool_call':
         this.handleToolCall(message);
@@ -804,6 +826,28 @@ export class RealtimeSession extends llm.RealtimeSession {
   private handleInputSpeechStarted(): void {
     this.emit('input_speech_started', {});
     this.closeCurrentGeneration({ interrupted: true });
+  }
+
+  private handleInterruptedResponse(message: InterruptedResponsePayload): void {
+    this.#logger.debug(
+      `Received interrupted_response${message.text ? ` (delivered text: "${message.text}")` : ''}`,
+    );
+    /**
+     * Phonic only sends `interrupted_response` in `stream_ahead_of_real_time` mode, on a
+     * barge-in. Because we forward assistant audio to the framework ahead of the playout
+     * clock, the framework can still be holding un-played audio buffered when the user
+     * interrupts; this is Phonic's signal to drop it (the equivalent of the phonic-api
+     * LiveKit bridge calling `source.clearQueue()`). The framework drops that buffered audio
+     * when it interrupts the active speech (`input_speech_started` triggers `audioOutput.clearBuffer()`).
+     *
+     * The barge-in's `user_started_speaking`, always sent immediately before this message,
+     * normally already drove that interrupt and closed the generation, so re-drive it only
+     * as a safety net when a generation is somehow still open — avoiding a duplicate
+     * interruption (and double-counted interruption metrics) in the common case.
+     */
+    if (this.currentGeneration !== undefined) {
+      this.handleInputSpeechStarted();
+    }
   }
 
   private handleInputSpeechStopped(): void {
