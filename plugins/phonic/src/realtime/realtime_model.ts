@@ -614,9 +614,6 @@ export class RealtimeSession extends llm.RealtimeSession {
   private async connect(): Promise<void> {
     this.socket = await this.client.conversations.connect({
       reconnectAttempts: this.options.connOptions.maxRetry,
-      ...(this.options.streamAheadOfRealTime && {
-        queryParams: { stream_ahead_of_real_time: true },
-      }),
     });
 
     if (this.closed) {
@@ -981,6 +978,12 @@ export class RealtimeSession extends llm.RealtimeSession {
       no_input_poke_sec: this.options.noInputPokeSec,
       no_input_poke_text: this.options.noInputPokeText,
       no_input_end_conversation_sec: this.options.noInputEndConversationSec,
+      // `stream_ahead_of_real_time` is not yet in the published `phonic` SDK's
+      // ConfigOptions type, but the SDK serializes config payloads verbatim, so
+      // the field reaches phonic-api. Spread it in only when set.
+      ...(this.options.streamAheadOfRealTime !== undefined && {
+        stream_ahead_of_real_time: this.options.streamAheadOfRealTime,
+      }),
     };
   }
 
