@@ -504,6 +504,23 @@ export class RealtimeSession extends llm.RealtimeSession {
       this.#logger.warn('updateConfig called on a closed Phonic session');
       return;
     }
+    // Switching the default language: rotate the previous default into additional_languages so it
+    // stays usable (and drop the new default, which the API disallows there), keeping the overall
+    // language set intact. Skipped when the caller sets additional_languages explicitly.
+    if (
+      config.defaultLanguage !== undefined &&
+      config.defaultLanguage !== this.options.defaultLanguage &&
+      config.additionalLanguages === undefined
+    ) {
+      const previousDefault = this.options.defaultLanguage;
+      config = {
+        ...config,
+        additionalLanguages: [
+          ...(previousDefault !== undefined ? [previousDefault] : []),
+          ...(this.options.additionalLanguages ?? []),
+        ].filter((lang, i, arr) => lang !== config.defaultLanguage && arr.indexOf(lang) === i),
+      };
+    }
     Object.assign(this.options, config);
     if (!this.configSent) {
       // Not connected yet — the initial config send will pick up the merged values.
