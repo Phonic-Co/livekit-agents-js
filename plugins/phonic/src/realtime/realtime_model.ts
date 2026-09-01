@@ -682,7 +682,12 @@ export class RealtimeSession extends llm.RealtimeSession {
         toolsPayload: [...(this.options.phonicTools ?? []), ...this.toolDefinitions],
       }),
       ...(this.options.additionalLanguages !== undefined && {
-        additional_languages: this.options.additionalLanguages,
+        // The API rejects a default language that also appears in additional_languages. Switching
+        // default_language mid-session (updateConfig) leaves the old list in place, so strip the
+        // current default here to avoid an "Invalid parameters" rejection.
+        additional_languages: this.options.additionalLanguages.filter(
+          (l) => l !== this.options.defaultLanguage,
+        ),
       }),
       ...(this.options.multilingualMode !== undefined && {
         multilingual_mode: this.options.multilingualMode,
@@ -960,7 +965,12 @@ export class RealtimeSession extends llm.RealtimeSession {
         default_language: this.options.defaultLanguage,
       }),
       ...(this.options.additionalLanguages !== undefined && {
-        additional_languages: this.options.additionalLanguages,
+        // The API rejects a default language that also appears in additional_languages. Switching
+        // default_language mid-session (updateConfig) leaves the old list in place, so strip the
+        // current default here to avoid an "Invalid parameters" rejection.
+        additional_languages: this.options.additionalLanguages.filter(
+          (l) => l !== this.options.defaultLanguage,
+        ),
       }),
       ...(this.options.multilingualMode !== undefined && {
         multilingual_mode: this.options.multilingualMode,
