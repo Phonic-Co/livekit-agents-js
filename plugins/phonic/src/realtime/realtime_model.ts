@@ -70,6 +70,11 @@ export interface RealtimeModelOptions {
   observabilityIntegrations?: Phonic.ConfigOptions['observability_integrations'];
   configurationEndpoint?: Phonic.ConfigOptions['configuration_endpoint'];
   additionalParams?: NonNullable<Phonic.ConfigOptions['additional_params']>;
+  /**
+   * Keep conversation history as items across a reset instead of folding it into the system prompt.
+   * Sends `preserve_history_on_reset` via `additional_params`; requires echo to skip its history clear.
+   */
+  preserveHistoryOnReset?: boolean;
   configsForTools?: PhonicToolConfig[];
   /** @deprecated Use `configsForTools` with `forbid_speech_after_tool_call` per tool instead. */
   forbidSpeechAfterToolCall?: string[];
@@ -300,6 +305,11 @@ export class RealtimeModel extends llm.RealtimeModel {
        */
       additionalParams?: NonNullable<Phonic.ConfigOptions['additional_params']>;
       /**
+       * Keep conversation history as items across a reset instead of folding it into the system
+       * prompt (sends `preserve_history_on_reset` via `additional_params`).
+       */
+      preserveHistoryOnReset?: boolean;
+      /**
        * Per-tool behavior overrides, one `PhonicToolConfig` per tool (keyed by `name`); omitted
        * fields fall back to the plugin defaults. See the README for the available fields.
        */
@@ -389,6 +399,7 @@ export class RealtimeModel extends llm.RealtimeModel {
       observabilityIntegrations: options.observabilityIntegrations,
       configurationEndpoint: options.configurationEndpoint,
       additionalParams: options.additionalParams,
+      preserveHistoryOnReset: options.preserveHistoryOnReset,
       configsForTools: options.configsForTools,
       forbidSpeechAfterToolCall: options.forbidSpeechAfterToolCall,
       onConversationCreated: options.onConversationCreated,
@@ -706,9 +717,13 @@ export class RealtimeSession extends llm.RealtimeSession {
    */
   private sendMidSessionReset(): void {
     let systemPrompt = this.options.instructions ?? '';
-    const history = this.buildTurnHistory(this._chatCtx);
-    if (history) {
-      systemPrompt += CONVERSATION_HISTORY_PREFIX + history;
+    // With preserveHistoryOnReset, echo keeps history as items across the reset, so don't fold the
+    // transcript into the system prompt.
+    if (!this.options.preserveHistoryOnReset) {
+      const history = this.buildTurnHistory(this._chatCtx);
+      if (history) {
+        systemPrompt += CONVERSATION_HISTORY_PREFIX + history;
+      }
     }
 
     this.closeCurrentGeneration({ interrupted: true });
@@ -1284,7 +1299,9 @@ export class RealtimeSession extends llm.RealtimeSession {
       mcp_servers: this.options.mcpServers,
       observability_integrations: this.options.observabilityIntegrations,
       configuration_endpoint: this.options.configurationEndpoint,
-      additional_params: this.options.additionalParams,
+      additional_params: this.options.preserveHistoryOnReset
+        ? { ...this.options.additionalParams, preserve_history_on_reset: true }
+        : this.options.additionalParams,
       stream_ahead_of_real_time: true,
     };
   }
