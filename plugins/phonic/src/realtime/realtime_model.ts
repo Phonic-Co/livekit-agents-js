@@ -51,6 +51,7 @@ export interface RealtimeModelOptions {
   noInputPokeSec?: number;
   noInputPokeText?: string;
   noInputEndConversationSec?: number;
+  phonicModel?: 'phonic_v0_5' | 'phonic_v1';
   /** Set by `updateInstructions` via `voice.Agent` rather than the RealtimeModel constructor */
   instructions?: string;
 }
@@ -152,6 +153,11 @@ export class RealtimeModel extends llm.RealtimeModel {
        */
       noInputEndConversationSec?: number;
       /**
+       * Phonic LLM model version. `phonic_v1` opts into the newer LLM (combined with the org
+       * feature flag, GLM-5.3-Fast); defaults server-side to `phonic_v0_5` when omitted.
+       */
+      phonicModel?: 'phonic_v0_5' | 'phonic_v1';
+      /**
        * Connection options for the API connection
        */
       connOptions?: APIConnectOptions;
@@ -210,6 +216,7 @@ export class RealtimeModel extends llm.RealtimeModel {
       noInputPokeSec: options.noInputPokeSec,
       noInputPokeText: options.noInputPokeText,
       noInputEndConversationSec: options.noInputEndConversationSec,
+      phonicModel: options.phonicModel,
       connOptions: options.connOptions ?? DEFAULT_API_CONNECT_OPTIONS,
       model: options.model ?? DEFAULT_MODEL,
       baseUrl: options.baseUrl,
@@ -884,6 +891,11 @@ export class RealtimeSession extends llm.RealtimeSession {
     toolsPayload: Phonic.ConfigOptions.Tools.Item[];
   }): Phonic.ConfigOptions {
     return {
+      // `phonic_model` selects the LLM version (e.g. `phonic_v1`). It is a valid wire field
+      // the server accepts, but is not yet in the `phonic` SDK's ConfigOptions type, so it is
+      // spread in via a cast to avoid the excess-property check.
+      ...(this.options.phonicModel !== undefined &&
+        ({ phonic_model: this.options.phonicModel } as Partial<Phonic.ConfigOptions>)),
       agent: this.options.phonicAgent,
       project: this.options.project,
       welcome_message: this.options.welcomeMessage,
