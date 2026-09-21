@@ -51,7 +51,7 @@ export interface RealtimeModelOptions {
   noInputPokeSec?: number;
   noInputPokeText?: string;
   noInputEndConversationSec?: number;
-  phonicModel?: 'phonic_v0_5' | 'phonic_v1';
+  phonicModel?: 'phonic_v0_5' | 'phonic_v1' | 'phonic_v1_1';
   /** Set by `updateInstructions` via `voice.Agent` rather than the RealtimeModel constructor */
   instructions?: string;
 }
@@ -153,10 +153,11 @@ export class RealtimeModel extends llm.RealtimeModel {
        */
       noInputEndConversationSec?: number;
       /**
-       * Phonic LLM model version. `phonic_v1` opts into the newer LLM (combined with the org
-       * feature flag, GLM-5.3-Fast); defaults server-side to `phonic_v0_5` when omitted.
+       * Phonic LLM model version. `phonic_v1` / `phonic_v1_1` opt into the newer LLM (combined
+       * with the org feature flag, GLM-5.3-Fast); defaults server-side to `phonic_v0_5` when
+       * omitted.
        */
-      phonicModel?: 'phonic_v0_5' | 'phonic_v1';
+      phonicModel?: 'phonic_v0_5' | 'phonic_v1' | 'phonic_v1_1';
       /**
        * Connection options for the API connection
        */
